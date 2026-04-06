@@ -1,54 +1,74 @@
 #!/usr/bin/env node
 
+import { Command } from "commander";
 import ora from "ora";
 import fs from "fs";
 import path from "path";
-import { generateSitemap } from "./index";
+import {
+    generateSitemap,
+    generateAdvancedSitemaps,
+} from "./index";
 
-async function main() {
-    const crawlUrl = process.argv[2];
-    const baseUrl = process.argv[3];
+const program = new Command();
 
-    if (!crawlUrl) {
-        console.log("Usage:");
-        console.log("npx sitemap-generator <crawl-url> [base-url]");
-        process.exit(1);
-    }
+program
+    .argument("<crawlUrl>")
+    .argument("[baseUrl]")
+    .option("--depth <n>", "Depth", "3")
+    .option("--max-pages <n>", "Max pages", "500")
+    .option("--concurrency <n>", "Concurrency", "5")
+    .option("--output <file>", "Output file", "sitemap.xml")
+    .option("--advanced", "Enable splitting/grouping")
+    .action(async (crawlUrl, baseUrl, opts) => {
+        const spinner = ora("🚀 Crawling...").start();
 
-    const spinner = ora("🚀 Starting crawl...").start();
+        try {
+            const result = await generateSitemap(
+                crawlUrl,
+                baseUrl,
+                (count, url) => {
+                    spinner.stop();
+                    console.log(`📄 ${new URL(url).pathname || "/"}`);
+                    spinner.start(`🔍 ${count} pages...`);
+                },
+                {
+                    depth: Number(opts.depth),
+                    maxPages: Number(opts.maxPages),
+                    concurrency: Number(opts.concurrency),
+                }
+            );
 
-    try {
-        const start = Date.now();
+            if (opts.advanced) {
+                const base = baseUrl || crawlUrl;
 
-        const result = await generateSitemap(
-            crawlUrl,
-            baseUrl,
-            (count, url) => {
-                spinner.stop();
+                const { files, indexXml } = generateAdvancedSitemaps(
+                    result.urls,
+                    base
+                );
 
-                const pathName = new URL(url).pathname || "/";
-                console.log(`📄 ${pathName}`);
+                files.forEach((file) => {
+                    fs.writeFileSync(file.filename, file.xml);
+                });
 
-                spinner.start(`🔍 Crawled ${count} pages...`);
+                fs.writeFileSync("sitemap.xml", indexXml);
+            } else {
+                const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${result.urls
+                        .map(
+                            (u) => `<url><loc>${u}</loc></url>`
+                        )
+                        .join("")}
+</urlset>`;
+
+                fs.writeFileSync(path.resolve(process.cwd(), opts.output), xml);
             }
-        );
 
-        // ✅ WRITE FILE HERE
-        const outputPath = path.resolve(process.cwd(), "sitemap.xml");
-        fs.writeFileSync(outputPath, result.sitemap, "utf-8");
+            spinner.succeed("✅ Done");
+        } catch (e: any) {
+            spinner.fail("❌ Failed");
+            console.error(e.message);
+        }
+    });
 
-        spinner.succeed("✅ Sitemap generated!");
-
-        console.log("\n📊 Stats:");
-        console.log(`Pages: ${result.count}`);
-        console.log(`Time: ${(Date.now() - start) / 1000}s`);
-
-        console.log(`\n📁 Saved to: ${outputPath}`);
-    } catch (err: any) {
-        spinner.fail("❌ Failed");
-        console.error(err.message);
-        process.exit(1);
-    }
-}
-
-main();
+program.parse();

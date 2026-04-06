@@ -1,35 +1,59 @@
 import { crawlSite } from "./crawler";
-import { generateSitemapXml } from "./xmlBuilder";
+import { generateSplitSitemaps, generateSitemapIndex } from "./xmlBuilder";
+import { groupUrls } from "./group";
 
-function mapToBaseUrl(
-    url: string,
-    crawlUrl: string,
-    baseUrl: string
-) {
+type Options = {
+    depth?: number;
+    maxPages?: number;
+    concurrency?: number;
+};
+
+function mapToBaseUrl(url: string, baseUrl: string) {
     try {
-        const target = new URL(url);
-        return url.replace(target.origin, baseUrl);
+        const u = new URL(url);
+        return url.replace(u.origin, baseUrl);
     } catch {
         return url;
     }
 }
 
 export async function generateSitemap(
-crawlUrl: string, baseUrl?: string, onProgress?: (count: number, url: string) => void, p0?: { depth: number; maxPages: number; }) {
-    if (!crawlUrl || !crawlUrl.startsWith("http")) {
-        throw new Error("Invalid URL");
-    }
-
-    const pages = await crawlSite(crawlUrl, onProgress);
+    crawlUrl: string,
+    baseUrl?: string,
+    onProgress?: (count: number, url: string) => void,
+    options?: Options
+) {
+    const pages = await crawlSite(crawlUrl, onProgress, options);
 
     const finalUrls = baseUrl
-        ? pages.map((url) => mapToBaseUrl(url, crawlUrl, baseUrl))
+        ? pages.map((url) => mapToBaseUrl(url, baseUrl))
         : pages;
 
-    const xml = generateSitemapXml(finalUrls);
-
     return {
-        sitemap: xml,
+        sitemap: finalUrls,
         count: finalUrls.length,
+        urls: finalUrls,
     };
+}
+
+export function generateAdvancedSitemaps(
+    urls: string[],
+    baseUrl: string
+) {
+    const grouped = groupUrls(urls);
+    const allFiles: { filename: string; xml: string }[] = [];
+
+    for (const key in grouped) {
+        const split = generateSplitSitemaps(grouped[key]);
+
+        split.forEach((file, i) => {
+            file.filename = `${key}-sitemap-${i + 1}.xml`;
+        });
+
+        allFiles.push(...split);
+    }
+
+    const indexXml = generateSitemapIndex(allFiles, baseUrl);
+
+    return { files: allFiles, indexXml };
 }

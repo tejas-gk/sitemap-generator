@@ -1,62 +1,72 @@
 import axios from "axios";
 import * as cheerio from "cheerio";
+import { normalize, isAsset } from "./utils";
 
-type QueueItem = { url: string; depth: number };
-
-function normalize(url: string) {
-    return url.split("#")[0].replace(/\/$/, "");
-}
+type Options = {
+    depth: number;
+    maxPages: number;
+    concurrency: number;
+};
 
 export async function crawlSite(
     startUrl: string,
-    onProgress?: (count: number, url: string) => void
+    onProgress?: (count: number, url: string) => void,
+    options?: Partial<Options>
 ): Promise<string[]> {
     const visited = new Set<string>();
+    const queue: { url: string; depth: number }[] = [
+        { url: startUrl, depth: 0 },
+    ];
+
     const baseHost = new URL(startUrl).hostname;
 
-    const queue: QueueItem[] = [{ url: startUrl, depth: 0 }];
+    const config: Options = {
+        depth: options?.depth ?? 3,
+        maxPages: options?.maxPages ?? 500,
+        concurrency: options?.concurrency ?? 5,
+    };
 
-    const MAX_PAGES = 500;
-    const MAX_DEPTH = 3;
+    async function worker() {
+        while (queue.length > 0) {
+            const item = queue.shift();
+            if (!item) return;
 
-    while (queue.length > 0) {
-        const { url, depth } = queue.shift()!;
+            const { url, depth } = item;
 
-        if (visited.has(url)) continue;
-        if (depth > MAX_DEPTH) continue;
+            if (visited.has(url)) continue;
+            if (depth > config.depth) continue;
 
-        visited.add(url);
-        onProgress?.(visited.size, url);
+            visited.add(url);
+            onProgress?.(visited.size, url);
 
-        if (visited.size >= MAX_PAGES) break;
+            if (visited.size >= config.maxPages) return;
 
-        try {
-            const { data } = await axios.get(url, { timeout: 5000 });
-            const $ = cheerio.load(data);
+            try {
+                const { data } = await axios.get(url, { timeout: 5000 });
+                const $ = cheerio.load(data);
 
-            $("a").each((_, el) => {
-                const href = $(el).attr("href");
-                if (!href) return;
+                $("a").each((_, el) => {
+                    const href = $(el).attr("href");
+                    if (!href) return;
 
-                const absolute = new URL(href, url).href;
-                const linkHost = new URL(absolute).hostname;
+                    try {
+                        const absolute = normalize(new URL(href, url).href);
+                        const host = new URL(absolute).hostname;
 
-                // ✅ restrict to same domain
-                if (linkHost !== baseHost) return;
+                        if (host !== baseHost) return;
+                        if (isAsset(absolute)) return;
+                        if (visited.has(absolute)) return;
 
-                // ✅ skip assets
-                if (/\.(png|jpg|jpeg|gif|svg|css|js|ico|pdf)$/i.test(absolute)) return;
-
-                const clean = normalize(absolute);
-
-                if (!visited.has(clean)) {
-                    queue.push({ url: clean, depth: depth + 1 });
-                }
-            });
-        } catch {
-            // ignore errors
+                        queue.push({ url: absolute, depth: depth + 1 });
+                    } catch { }
+                });
+            } catch { }
         }
     }
+
+    await Promise.all(
+        Array.from({ length: config.concurrency }, () => worker())
+    );
 
     return Array.from(visited);
 }
